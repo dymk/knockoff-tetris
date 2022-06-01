@@ -4,6 +4,9 @@ use lazy_static::lazy_static;
 #[derive(Copy, Clone)]
 pub enum Block {
     LShape,
+    JShape,
+    OShape,
+    IShape,
 }
 impl Block {
     pub fn create_movable(&self, at_pos: IVec2) -> MovableBlock {
@@ -12,6 +15,21 @@ impl Block {
                 position: at_pos,
                 rotation: 0,
                 shape: &L_SHAPE_CONFIG,
+            },
+            Block::JShape => MovableBlock {
+                position: at_pos,
+                rotation: 0,
+                shape: &J_SHAPE_CONFIG,
+            },
+            Block::OShape => MovableBlock {
+                position: at_pos,
+                rotation: 0,
+                shape: &O_SHAPE_CONFIG,
+            },
+            Block::IShape => MovableBlock {
+                position: at_pos,
+                rotation: 0,
+                shape: &I_SHAPE_CONFIG,
             },
         }
     }
@@ -56,7 +74,7 @@ impl MovableBlock {
             }
             RotDir::Left => {
                 if self_rot == 0 {
-                    num_rotations
+                    num_rotations - 1
                 } else {
                     self_rot - 1
                 }
@@ -94,7 +112,6 @@ struct BlockDefinition {
 }
 
 lazy_static! {
-    // for now, support only shifting left/right by one block
     static ref STANDARD_KICKS: LRKicks = LRKicks {
         left: conv_tuples_2(&[
             // 0 -> 1
@@ -117,6 +134,28 @@ lazy_static! {
             &[(0, 0), (1, 0), (-1, 0)],
         ])
     };
+    static ref I_KICKS: LRKicks = LRKicks {
+        left: conv_tuples_2(&[
+            // 0 -> 1
+            &[(0, 0)],
+            // 1 -> 0
+            &[(0, 0), (1, 0), (-1, 0), (2, 0), (-2, 0)],
+        ]),
+        right: conv_tuples_2(&[
+            // 0 -> 1
+            &[(0, 0)],
+            // 1 -> 0
+            &[(0, 0), (1, 0), (-1, 0), (2, 0), (-2, 0)],
+        ])
+    };
+
+    static ref IDENTITY_KICK: &'static [(i32, i32)] = &[(0, 0)];
+
+    static ref NO_KICKS: LRKicks = LRKicks {
+        left: conv_tuples_2(&[&[(0, 0)]]),
+        right: conv_tuples_2(&[&[(0, 0)]])
+    };
+
 
     #[rustfmt::skip]
     static ref L_SHAPE_CONFIG: BlockDefinition = BlockDefinition {
@@ -125,6 +164,32 @@ lazy_static! {
             (-1, 0), (0, 0), (1, 0)
         ]),
         kicks: &STANDARD_KICKS
+    };
+
+    #[rustfmt::skip]
+    static ref J_SHAPE_CONFIG: BlockDefinition = BlockDefinition {
+        rotations: build_rotations(4, false, &[
+            (-1, 1),
+            (-1, 0), (0, 0), (1, 0)
+        ]),
+        kicks: &STANDARD_KICKS
+    };
+
+    #[rustfmt::skip]
+    static ref O_SHAPE_CONFIG: BlockDefinition = BlockDefinition {
+        rotations: build_rotations(1, false, &[
+            (0, 1), (1, 1),
+            (0, 0), (1, 0)
+        ]),
+        kicks: &NO_KICKS
+    };
+
+    #[rustfmt::skip]
+    static ref I_SHAPE_CONFIG: BlockDefinition = BlockDefinition {
+        rotations: build_rotations(2, true, &[
+            (-2, 0), (-1, 0), (0, 0), (1, 0)
+        ]),
+        kicks: &I_KICKS
     };
 
     static ref DOT_CONFIG: BlockDefinition = BlockDefinition { rotations: build_rotations(1, false, &[(0, 0)]), kicks: &STANDARD_KICKS };

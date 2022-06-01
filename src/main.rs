@@ -25,7 +25,7 @@ fn main() {
             decorations: true,
             ..default()
         })
-        .insert_resource(ClearColor(Color::rgb(0.1, 0.1, 0.1)))
+        .insert_resource(ClearColor(Color::rgb(0.5, 0.5, 0.5)))
         .add_startup_system(setup_camera)
         .add_plugins(DefaultPlugins)
         .add_plugin(TetrisBlockPlugin)

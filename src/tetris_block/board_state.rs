@@ -2,8 +2,6 @@ use std::fmt;
 
 use bevy::prelude::*;
 
-use crate::GRID_CELLS;
-
 use super::block_shape::MovableBlock;
 
 type BoardCell = Option<Entity>;
@@ -62,7 +60,6 @@ impl BoardState {
     pub fn place_block(&mut self, block: &MovableBlock, ents: &[Entity]) {
         assert!(block.positions().len() == ents.len());
         for (idx, loc) in block.positions().enumerate() {
-            println!("ent {:?} placed at {}", ents[idx], loc);
             self.set_occupied(loc, ents[idx]);
         }
     }
@@ -136,7 +133,6 @@ mod test {
         assert!(board.is_occupied((-1, 0).into()));
 
         let block = TEST_MOVABLE_BLOCK.at_nudged((1, 1).into());
-        println!("{:?}", board);
         assert!(board.can_place(&block));
     }
 }
@@ -145,13 +141,10 @@ pub fn clear_filled_lines(mut commands: Commands, mut board_state: ResMut<BoardS
     // from the top of the board, to the bottom, check full lines
     for row in (0..board_state.height()).rev() {
         if board_state.is_row_full(row as usize) {
-            println!("row {} is full", row);
-
             // remove all the entities in this row
             for col in 0..board_state.width() {
                 let pos = IVec2::new(col as i32, row as i32);
                 if let Some(ent) = board_state.cell_mut(pos).take() {
-                    println!("despawning ent {:?} at {:?}", ent, (col, row));
                     commands.entity(ent).despawn_recursive();
                 }
             }
@@ -163,9 +156,6 @@ pub fn clear_filled_lines(mut commands: Commands, mut board_state: ResMut<BoardS
                     let to = IVec2::new(col as i32, row_ as i32);
 
                     let cell = board_state.cell(from);
-                    if let Some(ent) = cell {
-                        println!("moving ent {:?} down to {}", ent, to);
-                    }
                     *board_state.cell_mut(to) = cell;
                     *board_state.cell_mut(from) = None;
                 }

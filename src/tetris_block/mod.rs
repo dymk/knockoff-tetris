@@ -25,6 +25,8 @@ fn loc_to_translation(loc: IVec2) -> Vec3 {
     Vec3::new(shifted.x, shifted.y, 0.)
 }
 
+struct Paused(bool);
+
 pub struct TetrisBlockPlugin;
 impl Plugin for TetrisBlockPlugin {
     fn build(&self, app: &mut bevy::prelude::App) {
@@ -32,6 +34,8 @@ impl Plugin for TetrisBlockPlugin {
             GRID_CELLS.width as usize,
             GRID_CELLS.height as usize,
         ));
+        app.insert_resource(Paused(false));
+        app.add_system(update_pause_state);
 
         // spawning the new blocks must happen in its own stage, so update_block_positions can work with newly spawned entities
         let mut spawn_new_blocks = SystemStage::parallel();
@@ -89,6 +93,12 @@ impl Plugin for TetrisBlockPlugin {
     }
 }
 
+fn update_pause_state(input: Res<Input<KeyCode>>, mut paused: ResMut<Paused>) {
+    if input.just_pressed(KeyCode::Space) {
+        paused.0 = !paused.0;
+    }
+}
+
 fn no_active_block_exists(query: Query<(), With<TetrisBlock>>) -> ShouldRun {
     for _ in query.iter() {
         return ShouldRun::No;
@@ -114,8 +124,16 @@ fn at_z_pixel(z: f32) -> Transform {
     }
 }
 
+const BLOCKS: &[Block] = &[
+    /* Block::LShape, Block::JShape, Block::OShape,  */ Block::IShape,
+];
+fn rand_block() -> Block {
+    BLOCKS[thread_rng().gen_range(0..BLOCKS.len())]
+}
+
 fn spawn_new_block(mut commands: Commands) {
     let color = rand_color();
+    let block = rand_block();
 
     let big_sprite = || Sprite {
         color,
@@ -128,18 +146,17 @@ fn spawn_new_block(mut commands: Commands) {
         ..default()
     };
 
-    let shape = Block::LShape;
     let spawn_at = IVec2::new(
         (GRID_CELLS.width / 2) as i32,
         (GRID_CELLS.height - 3) as i32,
     );
-    let descriptor = shape.create_movable(spawn_at);
+    let movable_block = block.create_movable(spawn_at);
 
     commands
         .spawn()
         .insert_bundle(TransformBundle::identity())
         .with_children(|p1| {
-            for _ in descriptor.positions() {
+            for _ in movable_block.positions() {
                 p1.spawn()
                     .insert_bundle(TransformBundle::identity())
                     .with_children(|p2| {
@@ -156,7 +173,9 @@ fn spawn_new_block(mut commands: Commands) {
                     });
             }
         })
-        .insert(TetrisBlock { descriptor });
+        .insert(TetrisBlock {
+            descriptor: movable_block,
+        });
 }
 
 fn handle_block_left_right(
@@ -193,9 +212,9 @@ fn handle_block_rotation(
     board_state: Res<BoardState>,
     mut active_block_query: Query<&mut TetrisBlock>,
 ) {
-    if kb.just_pressed(KeyCode::Space) {
+    let mut rotate = |dir| {
         if let Ok(mut block) = active_block_query.get_single_mut() {
-            let (mut descriptor, kicks) = block.descriptor.at_rotate(RotDir::Right);
+            let (mut descriptor, kicks) = block.descriptor.at_rotate(dir);
 
             for &kick in kicks {
                 if board_state.can_place(&descriptor.at_nudged(kick)) {
@@ -205,23 +224,26 @@ fn handle_block_rotation(
                 }
             }
         }
+    };
+
+    if kb.just_pressed(KeyCode::A) {
+        rotate(RotDir::Left);
+    }
+    if kb.just_pressed(KeyCode::D) {
+        rotate(RotDir::Right);
     }
 }
 
 // move the sprites around according to the new board state
 fn update_child_transforms_from_board_state(
-    mut query: Query<(&mut Transform, Option<&Parent>, Option<&Children>)>,
+    mut query: Query<&mut Transform>,
     block_query: Query<(&TetrisBlock, &Children)>,
     board_state: Res<BoardState>,
 ) {
     let mut update_entity_xform = |loc, ent| {
-        if let Ok((mut tx, parent, children)) = query.get_mut(ent) {
+        if let Ok(mut tx) = query.get_mut(ent) {
             let translation = loc_to_translation(loc);
             if translation != tx.translation {
-                println!(
-                    "updating translation of ent {:?} to {} ({}) (parent is {:?}) (children are {:?})",
-                    ent, loc, translation, parent, children
-                );
                 tx.translation = translation;
                 assert!(tx.translation == translation);
             }
@@ -240,18 +262,20 @@ fn update_child_transforms_from_board_state(
 }
 
 fn move_active_block_down(
+    paused: Res<Paused>,
     mut commands: Commands,
     board_state: Res<BoardState>,
     mut query: Query<&mut TetrisBlock>,
 ) {
+    if paused.0 {
+        return;
+    }
+
     for mut block in query.iter_mut() {
         // move down if possible
         if board_state.can_place(&block.descriptor.at_nudged((0, -1).into())) {
             block.descriptor.nudge((0, -1).into());
             commands.remove_resource::<SkateTimer>();
-            println!("moved block down");
-        } else {
-            println!("can't move block down");
         }
     }
 }
@@ -265,7 +289,6 @@ fn start_stake_timer(
         // can the block move down no further?
         if !board_state.can_place(&block.descriptor.at_nudged((0, -1).into())) {
             // if so, start the skate timer
-            println!("starting skate timer");
             commands.insert_resource(SkateTimer(Timer::from_seconds(1.0, false)));
         }
     }
