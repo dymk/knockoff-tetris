@@ -1,4 +1,3 @@
-mod components;
 mod tetris_block;
 
 use bevy::prelude::*;
