@@ -1,120 +1,173 @@
+use std::fmt;
+
 use bevy::prelude::*;
 
-use crate::{components::ActiveBlock, GRID_CELLS};
+use crate::GRID_CELLS;
 
-use super::GridLocation;
+use super::block_shape::MovableBlock;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum BoardCell {
-    Empty,
-    Occupied(Entity),
-}
-
+type BoardCell = Option<Entity>;
 pub struct BoardState {
-    cells: Vec<Vec<BoardCell>>,
+    width: usize,
+    height: usize,
+    cells: Vec<BoardCell>,
 }
 impl BoardState {
-    pub fn new() -> BoardState {
-        let cells = (0..GRID_CELLS.y)
-            .map(|_| vec![BoardCell::Empty; GRID_CELLS.x as usize])
-            .collect::<Vec<_>>();
+    pub fn new(width: usize, height: usize) -> BoardState {
+        let cells = vec![None; width * height];
 
-        BoardState { cells }
-    }
-
-    pub fn clear(&mut self) {
-        for row in self.cells.iter_mut() {
-            for cell in row.iter_mut() {
-                *cell = BoardCell::Empty;
-            }
+        BoardState {
+            width,
+            height,
+            cells,
         }
     }
 
-    pub fn set_location_occupied(&mut self, loc: IVec2, entity: Entity) {
-        self.cells[loc.y as usize][loc.x as usize] = BoardCell::Occupied(entity);
+    pub fn width(&self) -> usize {
+        self.width
+    }
+    pub fn height(&self) -> usize {
+        self.height
     }
 
-    pub fn is_occupied(&self, loc: IVec2) -> bool {
-        if loc.x < 0 || loc.y < 0 || loc.x >= GRID_CELLS.x || loc.y >= GRID_CELLS.y {
-            return false;
+    fn to_idx(&self, vec: IVec2) -> usize {
+        ((self.width as i32 * vec.y) + vec.x) as usize
+    }
+    fn to_ivec(&self, idx: usize) -> IVec2 {
+        IVec2::new((idx % self.width) as i32, (idx / self.width) as i32)
+    }
+
+    pub fn cell(&self, loc: IVec2) -> BoardCell {
+        self.cells[self.to_idx(loc)]
+    }
+    pub fn cell_mut(&mut self, loc: IVec2) -> &mut BoardCell {
+        let idx = self.to_idx(loc);
+        &mut self.cells[idx]
+    }
+
+    pub fn iter_ents(&self) -> impl Iterator<Item = (IVec2, Entity)> + '_ {
+        self.cells
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, &c)| match c {
+                Some(ent) => Some((self.to_ivec(idx), ent)),
+                None => None,
+            })
+    }
+
+    pub fn can_place(&self, block: &MovableBlock) -> bool {
+        block.positions().all(|loc| !self.is_occupied(loc))
+    }
+
+    pub fn place_block(&mut self, block: &MovableBlock, ents: &[Entity]) {
+        assert!(block.positions().len() == ents.len());
+        for (idx, loc) in block.positions().enumerate() {
+            println!("ent {:?} placed at {}", ents[idx], loc);
+            self.set_occupied(loc, ents[idx]);
+        }
+    }
+
+    fn set_occupied(&mut self, loc: IVec2, entity: Entity) {
+        assert!(self.cell(loc).is_none());
+        *self.cell_mut(loc) = Some(entity);
+    }
+
+    fn is_occupied(&self, loc: IVec2) -> bool {
+        if loc.x < 0 || loc.y < 0 || loc.x >= (self.width as i32) || loc.y >= (self.height as i32) {
+            return true;
         }
 
-        if let BoardCell::Occupied(_) = self.cells[loc.y as usize][loc.x as usize] {
-            return false;
+        if self.cell(loc).is_some() {
+            return true;
         }
 
-        true
+        false
+    }
+
+    fn rows(
+        &self,
+    ) -> impl Iterator<Item = &[BoardCell]>
+           + DoubleEndedIterator<Item = &[BoardCell]>
+           + ExactSizeIterator<Item = &[BoardCell]>
+           + '_ {
+        self.cells.chunks(self.width)
     }
 
     pub fn is_row_full(&self, row: usize) -> bool {
-        self.cells[row].iter().all(|cell| {
-            if let BoardCell::Occupied(_) = cell {
-                true
-            } else {
-                false
-            }
-        })
-    }
-
-    pub fn remove_row(&mut self, row: usize) -> Vec<Entity> {
-        let row = self.cells.remove(row);
-        self.cells
-            .push(vec![BoardCell::Empty; GRID_CELLS.x as usize]);
-        return row
+        self.cells[(row * self.width as usize)..((row + 1) * self.width as usize)]
             .iter()
-            .filter_map(|cell| match cell {
-                BoardCell::Empty => None,
-                BoardCell::Occupied(ent) => Some(*ent),
-            })
-            .collect();
-    }
-
-    pub fn peek_row(&self, row: usize) -> Vec<Entity> {
-        self.cells[row]
-            .iter()
-            .filter_map(|cell| match cell {
-                BoardCell::Empty => None,
-                BoardCell::Occupied(ent) => Some(*ent),
-            })
-            .collect()
+            .all(|cell| cell.is_some())
     }
 }
 
-pub fn rebuild_board_state(
-    mut board_state: ResMut<BoardState>,
-    query: Query<(Entity, &GridLocation), Without<ActiveBlock>>,
-) {
-    board_state.clear();
-    for (entity, gl) in query.iter() {
-        board_state.set_location_occupied(gl.loc, entity);
+impl fmt::Debug for BoardState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_fmt(format_args!("Board State({})\n", self.rows().len()))?;
+        let spacer = "-".repeat(self.width * 2) + "\n";
+        f.write_str(spacer.as_str())?;
+
+        for row in self.rows().rev() {
+            let r = row
+                .iter()
+                .map(|elem| match elem {
+                    Some(_) => "XX",
+                    None => "..",
+                })
+                .collect::<String>();
+
+            f.write_str(r.as_str())?;
+            f.write_str("\n")?
+        }
+        f.write_str(spacer.as_str())?;
+        Ok(())
     }
 }
 
-pub fn clear_filled_lines(
-    mut commands: Commands,
-    mut query: Query<&mut GridLocation, Without<ActiveBlock>>,
-    mut board_state: ResMut<BoardState>,
-) {
+#[cfg(test)]
+mod test {
+    use crate::tetris_block::block_shape::TEST_MOVABLE_BLOCK;
+
+    use super::BoardState;
+
+    #[test]
+    fn test() {
+        let board = BoardState::new(3, 3);
+        assert!(!board.is_occupied((0, 0).into()));
+        assert!(board.is_occupied((-1, 0).into()));
+
+        let block = TEST_MOVABLE_BLOCK.at_nudged((1, 1).into());
+        println!("{:?}", board);
+        assert!(board.can_place(&block));
+    }
+}
+
+pub fn clear_filled_lines(mut commands: Commands, mut board_state: ResMut<BoardState>) {
     // from the top of the board, to the bottom, check full lines
-    for row in (0..GRID_CELLS.y).rev() {
+    for row in (0..board_state.height()).rev() {
         if board_state.is_row_full(row as usize) {
             println!("row {} is full", row);
 
-            // remove all the entities in that row
-            for ent in board_state.remove_row(row as usize) {
-                commands.entity(ent).despawn_recursive();
+            // remove all the entities in this row
+            for col in 0..board_state.width() {
+                let pos = IVec2::new(col as i32, row as i32);
+                if let Some(ent) = board_state.cell_mut(pos).take() {
+                    println!("despawning ent {:?} at {:?}", ent, (col, row));
+                    commands.entity(ent).despawn_recursive();
+                }
             }
 
-            // for all the rows that come after, shift them down by one
-            // don't need to go from (row+1) because the row was already removed
-            for row_ in row..GRID_CELLS.y {
-                println!("shifting all on row {} down one...", row_);
-                for ent in board_state.peek_row(row_ as usize) {
-                    println!("e: {:?}", ent);
-                    if let Ok(mut gl) = query.get_mut(ent) {
-                        println!("shifting {:?} down a 'y'", gl.loc);
-                        gl.loc.y -= 1;
+            for row_ in row..(board_state.height() - 1) {
+                // move everything from the rows above down one 'y' position
+                for col in 0..board_state.width() {
+                    let from = IVec2::new(col as i32, (row_ + 1) as i32);
+                    let to = IVec2::new(col as i32, row_ as i32);
+
+                    let cell = board_state.cell(from);
+                    if let Some(ent) = cell {
+                        println!("moving ent {:?} down to {}", ent, to);
                     }
+                    *board_state.cell_mut(to) = cell;
+                    *board_state.cell_mut(from) = None;
                 }
             }
         }

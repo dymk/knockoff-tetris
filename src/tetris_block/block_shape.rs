@@ -2,81 +2,216 @@ use bevy::{math::IVec2, prelude::Component};
 use lazy_static::lazy_static;
 
 #[derive(Copy, Clone)]
-pub enum BlockShape {
+pub enum Block {
     LShape,
 }
-impl BlockShape {
-    pub fn create_descriptor(&self, at_pos: IVec2) -> BlockShapeDescriptor {
+impl Block {
+    pub fn create_movable(&self, at_pos: IVec2) -> MovableBlock {
         match self {
-            BlockShape::LShape => BlockShapeDescriptor {
+            Block::LShape => MovableBlock {
                 position: at_pos,
-                relative_locs: L_SHAPE_CONFIG.locs.to_vec(),
-                rot_around_corner: L_SHAPE_CONFIG.rot_around_corner,
+                rotation: 0,
+                shape: &L_SHAPE_CONFIG,
             },
         }
     }
 }
 
-#[derive(Component, Clone)]
-pub struct BlockShapeDescriptor {
-    position: IVec2,
-    relative_locs: Vec<IVec2>,
-    rot_around_corner: bool,
+pub enum RotDir {
+    Right,
+    Left,
 }
 
-impl BlockShapeDescriptor {
-    pub fn rotate(&mut self) {
-        let rot_around_corner = self.rot_around_corner;
-        for relative_loc in self.relative_locs.iter_mut() {
-            *relative_loc = Self::rotate_(rot_around_corner, *relative_loc);
+#[derive(Component, Clone)]
+pub struct MovableBlock {
+    shape: &'static BlockDefinition,
+    position: IVec2,
+    rotation: u8,
+}
+
+pub type Kicks = &'static [IVec2];
+impl MovableBlock {
+    pub fn at_rotate(&self, rot_dir: RotDir) -> (Self, Kicks) {
+        let mut ret = MovableBlock { ..*self };
+        let kicks = ret.rotate(rot_dir);
+        (ret, kicks)
+    }
+
+    pub fn rotate(&mut self, rot_dir: RotDir) -> Kicks {
+        let kicks = &match rot_dir {
+            RotDir::Right => &self.shape.kicks.right,
+            RotDir::Left => &self.shape.kicks.left,
+        }[self.rotation as usize];
+
+        let num_rotations = self.shape.rotations.len();
+        let self_rot = self.rotation as usize;
+
+        self.rotation = match rot_dir {
+            RotDir::Right => {
+                if self_rot == num_rotations - 1 {
+                    0
+                } else {
+                    self_rot + 1
+                }
+            }
+            RotDir::Left => {
+                if self_rot == 0 {
+                    num_rotations
+                } else {
+                    self_rot - 1
+                }
+            }
+        } as u8;
+        kicks
+    }
+
+    pub fn positions(
+        &self,
+    ) -> impl ExactSizeIterator<Item = IVec2> + DoubleEndedIterator<Item = IVec2> + '_ {
+        self.shape.rotations[self.rotation as usize]
+            .iter()
+            .map(|&loc| loc + self.position)
+    }
+
+    pub fn at_nudged(&self, by: IVec2) -> MovableBlock {
+        MovableBlock {
+            position: self.position + by,
+            ..*self
         }
     }
-
-    pub fn rotate_back(&mut self) {
-        self.rotate();
-        self.rotate();
-        self.rotate();
-    }
-
-    pub fn locs(&self) -> impl Iterator<Item = IVec2> + '_ {
-        self.relative_locs.iter().map(|&loc| loc + self.position)
-    }
-
     pub fn nudge(&mut self, by: IVec2) {
         self.position += by;
     }
-
-    fn rotate_(rot_around_corner: bool, vec: IVec2) -> IVec2 {
-        let mut vec = vec;
-
-        if !rot_around_corner {
-            IVec2::new(vec.y, -vec.x)
-        } else {
-            vec = (vec * 2) + 1;
-            vec = IVec2::new(vec.y, -vec.x);
-            vec = (vec - 1) / 2;
-            vec
-        }
-    }
 }
 
-pub struct BlockShapeOffsets {
-    locs: [IVec2; 4],
-    rot_around_corner: bool,
+struct LRKicks {
+    pub left: Vec<Vec<IVec2>>,
+    pub right: Vec<Vec<IVec2>>,
+}
+struct BlockDefinition {
+    pub rotations: Vec<Vec<IVec2>>,
+    pub kicks: &'static LRKicks,
 }
 
 lazy_static! {
-    #[rustfmt::skip]
-    pub static ref L_SHAPE_CONFIG: BlockShapeOffsets = BlockShapeOffsets {
-        locs: conv_list([
-            (0,  1),
-            (0,  0),
-            (0, -1), (1, -1)
+    // for now, support only shifting left/right by one block
+    static ref STANDARD_KICKS: LRKicks = LRKicks {
+        left: conv_tuples_2(&[
+            // 0 -> 1
+            &[(0, 0), (1, 0), (-1, 0)],
+            // 1 -> 2
+            &[(0, 0), (1, 0), (-1, 0)],
+            // 2 -> 3
+            &[(0, 0), (1, 0), (-1, 0)],
+            // 3 -> 0
+            &[(0, 0), (1, 0), (-1, 0)],
         ]),
-        rot_around_corner: false
+        right: conv_tuples_2(&[
+            // 0 -> 1
+            &[(0, 0), (1, 0), (-1, 0)],
+            // 1 -> 2
+            &[(0, 0), (1, 0), (-1, 0)],
+            // 2 -> 3
+            &[(0, 0), (1, 0), (-1, 0)],
+            // 3 -> 0
+            &[(0, 0), (1, 0), (-1, 0)],
+        ])
+    };
+
+    #[rustfmt::skip]
+    static ref L_SHAPE_CONFIG: BlockDefinition = BlockDefinition {
+        rotations: build_rotations(4, false, &[
+                             (1, 1),
+            (-1, 0), (0, 0), (1, 0)
+        ]),
+        kicks: &STANDARD_KICKS
+    };
+
+    static ref DOT_CONFIG: BlockDefinition = BlockDefinition { rotations: build_rotations(1, false, &[(0, 0)]), kicks: &STANDARD_KICKS };
+    pub static ref TEST_MOVABLE_BLOCK: MovableBlock = MovableBlock {
+        position: IVec2::new(0, 0),
+        rotation: 0,
+        shape: &DOT_CONFIG,
     };
 }
 
-fn conv_list<const N: usize>(list: [(i32, i32); N]) -> [IVec2; N] {
-    list.map(|(x, y)| IVec2::new(x, y))
+fn conv_tuples(list: &[(i32, i32)]) -> Vec<IVec2> {
+    list.iter().map(|&l| Into::into(l)).collect()
+}
+fn conv_tuples_2(list: &[&[(i32, i32)]]) -> Vec<Vec<IVec2>> {
+    list.iter().map(|&l| conv_tuples(l)).collect()
+}
+
+fn build_rotations(
+    num_rotations: usize,
+    rot_around_corner: bool,
+    list: &[(i32, i32)],
+) -> Vec<Vec<IVec2>> {
+    assert!(num_rotations > 0);
+    let list = conv_tuples(list);
+
+    let rotate = |vec: IVec2| {
+        if !rot_around_corner {
+            IVec2::new(vec.y, -vec.x)
+        } else {
+            let vec = (vec * 2) + 1;
+            let vec = IVec2::new(vec.y, -vec.x);
+            let vec = (vec - 1) / 2;
+            vec
+        }
+    };
+
+    let mut ret = Vec::new();
+    ret.reserve(num_rotations);
+
+    ret.push(list);
+    for _ in 0..(num_rotations - 1) {
+        let rotated = ret.last().unwrap().iter().map(|&l| rotate(l)).collect();
+        ret.push(rotated);
+    }
+
+    ret
+}
+
+#[cfg(test)]
+mod test {
+    use crate::tetris_block::block_shape::conv_tuples_2;
+
+    use super::build_rotations;
+
+    #[test]
+    fn test_build_rotations() {
+        let rots = build_rotations(1, false, &[(0, 0), (1, 0), (2, 0)]);
+        #[rustfmt::skip]
+        assert_eq!(rots, conv_tuples_2(&[
+            &[(0, 0), (1, 0), (2, 0)],
+        ]));
+
+        let rots = build_rotations(2, false, &[(0, 0), (1, 0), (2, 0)]);
+        #[rustfmt::skip]
+        assert_eq!(rots, conv_tuples_2(&[
+            &[(0, 0), (1, 0), (2, 0)],
+            &[
+                (0, 0), 
+                (0, -1), 
+                (0, -2)
+            ],
+        ]));
+
+        let rots = build_rotations(2, false, &[(0, 0)]);
+        #[rustfmt::skip]
+        assert_eq!(rots, conv_tuples_2(&[
+            &[(0, 0)],
+            &[(0, 0)],
+        ]));
+
+        let rots = build_rotations(4, true, &[(0, 0)]);
+        #[rustfmt::skip]
+        assert_eq!(rots, conv_tuples_2(&[
+            &[(0, 0)],
+            &[(0, -1)],
+            &[(-1, -1)],
+            &[(-1, 0)],
+        ]));
+    }
 }

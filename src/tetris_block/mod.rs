@@ -5,45 +5,40 @@ mod skate_timer;
 use bevy::{core::FixedTimestep, ecs::schedule::ShouldRun, prelude::*};
 use rand::{thread_rng, Rng};
 
-use crate::{components::ActiveBlock, CELL_SIDE_LEN, GRID_CELLS};
+use crate::{CELL_SIDE_LEN, GRID_CELLS};
 
-use self::block_shape::{BlockShape, BlockShapeDescriptor};
-use self::board_state::{clear_filled_lines, rebuild_board_state, BoardState};
+use self::block_shape::{Block, MovableBlock, RotDir};
+use self::board_state::{clear_filled_lines, BoardState};
 use self::skate_timer::{skate_timer_absent, skate_timer_present, SkateTimer};
 
 #[derive(Component)]
 struct TetrisBlock {
-    descriptor: BlockShapeDescriptor,
+    descriptor: MovableBlock,
 }
 
-#[derive(Component, Debug, Copy, Clone)]
-pub struct GridLocation {
-    idx: usize,
-    loc: IVec2,
-}
-
-impl GridLocation {
-    pub fn to_translation(&self) -> Vec3 {
-        let screen_dims = Vec2::new(GRID_CELLS.x as f32, GRID_CELLS.y as f32) * CELL_SIDE_LEN;
-        // offset to apply to move center (0, 0) to the bottom left of the screen
-        let offset = -screen_dims / 2.;
-        let this = Vec2::new(self.loc.x as f32, self.loc.y as f32) * CELL_SIDE_LEN;
-        let shifted = this + offset + Vec2::new(CELL_SIDE_LEN / 2., CELL_SIDE_LEN / 2.);
-        Vec3::new(shifted.x, shifted.y, 0.)
-    }
+fn loc_to_translation(loc: IVec2) -> Vec3 {
+    let screen_dims = Vec2::new(GRID_CELLS.width as f32, GRID_CELLS.height as f32) * CELL_SIDE_LEN;
+    // offset to apply to move center (0, 0) to the bottom left of the screen
+    let offset = -screen_dims / 2.;
+    let this = Vec2::new(loc.x as f32, loc.y as f32) * CELL_SIDE_LEN;
+    let shifted = this + offset + Vec2::new(CELL_SIDE_LEN / 2., CELL_SIDE_LEN / 2.);
+    Vec3::new(shifted.x, shifted.y, 0.)
 }
 
 pub struct TetrisBlockPlugin;
 impl Plugin for TetrisBlockPlugin {
     fn build(&self, app: &mut bevy::prelude::App) {
-        app.insert_resource(BoardState::new());
+        app.insert_resource(BoardState::new(
+            GRID_CELLS.width as usize,
+            GRID_CELLS.height as usize,
+        ));
 
         // spawning the new blocks must happen in its own stage, so update_block_positions can work with newly spawned entities
         let mut spawn_new_blocks = SystemStage::parallel();
         spawn_new_blocks.add_system_set(
             SystemSet::new()
                 .with_run_criteria(no_active_block_exists)
-                .with_system(insert_active_block),
+                .with_system(spawn_new_block),
         );
 
         let mut update_block_positions = SystemStage::parallel();
@@ -51,20 +46,16 @@ impl Plugin for TetrisBlockPlugin {
             .add_system(handle_block_left_right)
             .add_system(handle_block_rotation)
             .add_system(
-                update_child_grid_locations_from_block
+                update_child_transforms_from_board_state
                     .after(handle_block_left_right)
                     .after(handle_block_rotation),
-            )
-            .add_system(
-                update_child_transforms_from_grid_locations
-                    .after(update_child_grid_locations_from_block),
             )
             // moves the active block down every 1 second
             .add_system_set(
                 SystemSet::new()
                     .with_run_criteria(FixedTimestep::step(1.))
                     .with_system(
-                        move_active_block_down.after(update_child_transforms_from_grid_locations),
+                        move_active_block_down.after(update_child_transforms_from_board_state),
                     ),
             )
             // checks if the skate timer can be started after block movement
@@ -82,9 +73,7 @@ impl Plugin for TetrisBlockPlugin {
             );
 
         let mut update_board_state = SystemStage::parallel();
-        update_board_state
-            .add_system(rebuild_board_state)
-            .add_system(clear_filled_lines.after(rebuild_board_state));
+        update_board_state.add_system(clear_filled_lines);
 
         app.add_stage_after(CoreStage::Update, "spawn_new_blocks", spawn_new_blocks);
         app.add_stage_after(
@@ -100,7 +89,7 @@ impl Plugin for TetrisBlockPlugin {
     }
 }
 
-fn no_active_block_exists(query: Query<(), With<ActiveBlock>>) -> ShouldRun {
+fn no_active_block_exists(query: Query<(), With<TetrisBlock>>) -> ShouldRun {
     for _ in query.iter() {
         return ShouldRun::No;
     }
@@ -114,6 +103,9 @@ const COLORS: &[Color] = &[
     Color::ORANGE,
     Color::PURPLE,
 ];
+fn rand_color() -> Color {
+    COLORS[thread_rng().gen_range(0..COLORS.len())]
+}
 
 fn at_z_pixel(z: f32) -> Transform {
     Transform {
@@ -122,8 +114,8 @@ fn at_z_pixel(z: f32) -> Transform {
     }
 }
 
-fn insert_active_block(mut commands: Commands) {
-    let color = COLORS[thread_rng().gen_range(0..COLORS.len())];
+fn spawn_new_block(mut commands: Commands) {
+    let color = rand_color();
 
     let big_sprite = || Sprite {
         color,
@@ -136,31 +128,27 @@ fn insert_active_block(mut commands: Commands) {
         ..default()
     };
 
-    let shape = BlockShape::LShape;
-    let spawn_at = IVec2::new(GRID_CELLS.x / 2, GRID_CELLS.y - 3);
-    let descriptor = shape.create_descriptor(spawn_at);
+    let shape = Block::LShape;
+    let spawn_at = IVec2::new(
+        (GRID_CELLS.width / 2) as i32,
+        (GRID_CELLS.height - 3) as i32,
+    );
+    let descriptor = shape.create_movable(spawn_at);
 
     commands
         .spawn()
-        .insert(ActiveBlock)
-        .insert(Transform::identity())
-        .insert(GlobalTransform::identity())
-        .with_children(|parent| {
-            for (idx, loc) in descriptor.locs().enumerate() {
-                parent
-                    .spawn()
-                    .insert(Transform::identity())
-                    .insert(GlobalTransform::identity())
-                    .insert(ActiveBlock)
-                    .insert(GridLocation { idx, loc })
-                    .with_children(|parent| {
-                        parent.spawn().insert_bundle(SpriteBundle {
+        .insert_bundle(TransformBundle::identity())
+        .with_children(|p1| {
+            for _ in descriptor.positions() {
+                p1.spawn()
+                    .insert_bundle(TransformBundle::identity())
+                    .with_children(|p2| {
+                        p2.spawn().insert_bundle(SpriteBundle {
                             sprite: big_sprite(),
                             transform: at_z_pixel(10.),
                             ..default()
                         });
-
-                        parent.spawn().insert_bundle(SpriteBundle {
+                        p2.spawn().insert_bundle(SpriteBundle {
                             sprite: little_sprite(),
                             transform: at_z_pixel(11.),
                             ..default()
@@ -174,15 +162,11 @@ fn insert_active_block(mut commands: Commands) {
 fn handle_block_left_right(
     kb: Res<Input<KeyCode>>,
     board_state: Res<BoardState>,
-    mut active_block_query: Query<&mut TetrisBlock, With<ActiveBlock>>,
+    mut active_block_query: Query<&mut TetrisBlock>,
 ) {
     if let Ok(mut block) = active_block_query.get_single_mut() {
         let mut try_nudge_descriptor = |dir| {
-            if block
-                .descriptor
-                .locs()
-                .all(|loc| board_state.is_occupied(loc + dir))
-            {
+            if board_state.can_place(&block.descriptor.at_nudged(dir)) {
                 block.descriptor.nudge(dir);
                 true
             } else {
@@ -207,81 +191,67 @@ fn handle_block_left_right(
 fn handle_block_rotation(
     kb: Res<Input<KeyCode>>,
     board_state: Res<BoardState>,
-    mut active_block_query: Query<&mut TetrisBlock, With<ActiveBlock>>,
+    mut active_block_query: Query<&mut TetrisBlock>,
 ) {
     if kb.just_pressed(KeyCode::Space) {
         if let Ok(mut block) = active_block_query.get_single_mut() {
-            let original_descriptor = block.descriptor.clone();
+            let (mut descriptor, kicks) = block.descriptor.at_rotate(RotDir::Right);
 
-            block.descriptor.rotate();
-
-            // wall kick if gone off the edge
-            let min_x = block.descriptor.locs().map(|loc| loc.x).min();
-            match min_x {
-                Some(x) if x < 0 => block.descriptor.nudge((-x, 0).into()),
-                _ => {}
-            }
-
-            let max_x = block.descriptor.locs().map(|loc| loc.x).max();
-            match max_x {
-                Some(x) if x >= GRID_CELLS.x => {
-                    block.descriptor.nudge((-(GRID_CELLS.x - x + 1), 0).into())
+            for &kick in kicks {
+                if board_state.can_place(&descriptor.at_nudged(kick)) {
+                    descriptor.nudge(kick);
+                    block.descriptor = descriptor;
+                    return;
                 }
-                _ => {}
-            }
-
-            // revert if any cells are already occupied
-            if block
-                .descriptor
-                .locs()
-                .any(|loc| !board_state.is_occupied(loc))
-            {
-                block.descriptor = original_descriptor;
             }
         }
     }
 }
 
-fn update_child_grid_locations_from_block(
-    query: Query<(&TetrisBlock, &Children), (With<ActiveBlock>, Changed<TetrisBlock>)>,
-    mut grid_location: Query<&mut GridLocation>,
+// move the sprites around according to the new board state
+fn update_child_transforms_from_board_state(
+    mut query: Query<(&mut Transform, Option<&Parent>, Option<&Children>)>,
+    block_query: Query<(&TetrisBlock, &Children)>,
+    board_state: Res<BoardState>,
 ) {
-    for (block, child_ents) in query.iter() {
-        let locs: Vec<_> = block.descriptor.locs().collect();
-
-        for &child_ent in child_ents.iter() {
-            if let Ok(mut gl) = grid_location.get_mut(child_ent) {
-                gl.loc = locs[gl.idx];
+    let mut update_entity_xform = |loc, ent| {
+        if let Ok((mut tx, parent, children)) = query.get_mut(ent) {
+            let translation = loc_to_translation(loc);
+            if translation != tx.translation {
+                println!(
+                    "updating translation of ent {:?} to {} ({}) (parent is {:?}) (children are {:?})",
+                    ent, loc, translation, parent, children
+                );
+                tx.translation = translation;
+                assert!(tx.translation == translation);
             }
         }
-    }
-}
+    };
 
-fn update_child_transforms_from_grid_locations(
-    mut query: Query<(&GridLocation, &mut Transform), Changed<GridLocation>>,
-) {
-    for (gl, mut tx) in query.iter_mut() {
-        tx.translation = gl.to_translation();
+    for (block, children) in block_query.iter() {
+        for (pos, &ent) in block.descriptor.positions().zip(&children[..]) {
+            update_entity_xform(pos, ent);
+        }
+    }
+
+    for (pos, ent) in board_state.iter_ents() {
+        update_entity_xform(pos, ent);
     }
 }
 
 fn move_active_block_down(
     mut commands: Commands,
     board_state: Res<BoardState>,
-    mut query: Query<&mut TetrisBlock, With<ActiveBlock>>,
+    mut query: Query<&mut TetrisBlock>,
 ) {
     for mut block in query.iter_mut() {
         // move down if possible
-        if block
-            .descriptor
-            .locs()
-            .all(|loc| board_state.is_occupied(loc + IVec2::new(0, -1)))
-        {
+        if board_state.can_place(&block.descriptor.at_nudged((0, -1).into())) {
             block.descriptor.nudge((0, -1).into());
-
-            // cancel the existing skate timer if the block was able to
-            // be moved down
             commands.remove_resource::<SkateTimer>();
+            println!("moved block down");
+        } else {
+            println!("can't move block down");
         }
     }
 }
@@ -289,16 +259,13 @@ fn move_active_block_down(
 fn start_stake_timer(
     mut commands: Commands,
     board_state: Res<BoardState>,
-    mut query: Query<&TetrisBlock, With<ActiveBlock>>,
+    mut query: Query<&TetrisBlock>,
 ) {
     for block in query.iter_mut() {
         // can the block move down no further?
-        if block
-            .descriptor
-            .locs()
-            .any(|loc| !board_state.is_occupied(loc + IVec2::new(0, -1)))
-        {
+        if !board_state.can_place(&block.descriptor.at_nudged((0, -1).into())) {
             // if so, start the skate timer
+            println!("starting skate timer");
             commands.insert_resource(SkateTimer(Timer::from_seconds(1.0, false)));
         }
     }
@@ -308,9 +275,8 @@ fn deactivate_block_after_skate_timer(
     mut commands: Commands,
     mut timer: ResMut<SkateTimer>,
     time: Res<Time>,
-    tetris_block_query: Query<(Entity, &TetrisBlock), With<ActiveBlock>>,
-    board_state: Res<BoardState>,
-    active_blocks_query: Query<Entity, With<ActiveBlock>>,
+    query: Query<(Entity, &TetrisBlock, &Children)>,
+    mut board_state: ResMut<BoardState>,
 ) {
     if !timer.0.tick(time.delta()).just_finished() {
         return;
@@ -318,22 +284,15 @@ fn deactivate_block_after_skate_timer(
 
     commands.remove_resource::<SkateTimer>();
 
-    if let Ok((tetris_block_ent, tetris_block)) = tetris_block_query.get_single() {
+    if let Ok((tetris_block_ent, tetris_block, children)) = query.get_single() {
         // if any blocks have the location below them occupied...
-        if tetris_block
-            .descriptor
-            .locs()
-            .any(|loc| !board_state.is_occupied(loc + IVec2::new(0, -1)))
-        {
-            // finalize the location of the active blocks
+        if !board_state.can_place(&tetris_block.descriptor.at_nudged((0, -1).into())) {
+            // finalize the location of the block cells
+            board_state.place_block(&tetris_block.descriptor, &children[..]);
+            // orphan children, else their children despawn
+            commands.entity(tetris_block_ent).remove_children(children);
             // and remove the tetris block entity
             commands.entity(tetris_block_ent).despawn();
-            for entity in active_blocks_query.iter() {
-                if entity == tetris_block_ent {
-                    continue;
-                }
-                commands.entity(entity).remove::<ActiveBlock>();
-            }
         }
     }
 }

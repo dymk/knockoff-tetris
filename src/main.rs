@@ -1,18 +1,25 @@
 mod components;
 mod tetris_block;
 
-use bevy::{math::XY, prelude::*};
+use bevy::prelude::*;
 
 use tetris_block::*;
 
-pub const GRID_CELLS: XY<i32> = XY { x: 8, y: 12 };
+pub struct Dims {
+    width: i32,
+    height: i32,
+}
+pub const GRID_CELLS: Dims = Dims {
+    width: 8,
+    height: 12,
+};
 pub const CELL_SIDE_LEN: f32 = 40.;
 
 fn main() {
     App::new()
         .insert_resource(WindowDescriptor {
-            width: GRID_CELLS.x as f32 * CELL_SIDE_LEN,
-            height: GRID_CELLS.y as f32 * CELL_SIDE_LEN,
+            width: GRID_CELLS.width as f32 * CELL_SIDE_LEN,
+            height: GRID_CELLS.height as f32 * CELL_SIDE_LEN,
             title: "Knockoff Tetris".to_string(),
             resizable: false,
             decorations: true,
