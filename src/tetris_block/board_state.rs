@@ -2,7 +2,7 @@ use std::fmt;
 
 use bevy::prelude::*;
 
-use super::block_shape::MovableBlock;
+use super::movable_block::MovableBlock;
 
 type BoardCell = Option<Entity>;
 pub struct BoardState {
@@ -47,10 +47,7 @@ impl BoardState {
         self.cells
             .iter()
             .enumerate()
-            .filter_map(|(idx, &c)| match c {
-                Some(ent) => Some((self.to_ivec(idx), ent)),
-                None => None,
-            })
+            .filter_map(|(idx, &ent)| ent.map(|ent| (self.to_ivec(idx), ent)))
     }
 
     pub fn can_place(&self, block: &MovableBlock) -> bool {
@@ -67,6 +64,37 @@ impl BoardState {
     fn set_occupied(&mut self, loc: IVec2, entity: Entity) {
         assert!(self.cell(loc).is_none());
         *self.cell_mut(loc) = Some(entity);
+    }
+
+    pub fn clear_filled_lines(&mut self) -> Vec<Entity> {
+        let mut entities_to_clear = vec![];
+
+        // from the top of the board, to the bottom, check full lines
+        for row in (0..self.height).rev() {
+            if self.is_row_full(row as usize) {
+                // remove all the entities in this row
+                for col in 0..self.width() {
+                    let pos = IVec2::new(col as i32, row as i32);
+                    if let Some(ent) = self.cell_mut(pos).take() {
+                        entities_to_clear.push(ent);
+                    }
+                }
+
+                for row_ in row..(self.height() - 1) {
+                    // move everything from the rows above down one 'y' position
+                    for col in 0..self.width() {
+                        let from = IVec2::new(col as i32, (row_ + 1) as i32);
+                        let to = IVec2::new(col as i32, row_ as i32);
+
+                        let cell = self.cell(from);
+                        *self.cell_mut(to) = cell;
+                        *self.cell_mut(from) = None;
+                    }
+                }
+            }
+        }
+
+        entities_to_clear
     }
 
     fn is_occupied(&self, loc: IVec2) -> bool {
@@ -107,7 +135,7 @@ impl fmt::Debug for BoardState {
             let r = row
                 .iter()
                 .map(|elem| match elem {
-                    Some(_) => "XX",
+                    Some(_) => "██",
                     None => "..",
                 })
                 .collect::<String>();
@@ -122,7 +150,7 @@ impl fmt::Debug for BoardState {
 
 #[cfg(test)]
 mod test {
-    use crate::tetris_block::block_shape::TEST_MOVABLE_BLOCK;
+    use crate::tetris_block::movable_block::BlockName;
 
     use super::BoardState;
 
@@ -132,34 +160,10 @@ mod test {
         assert!(!board.is_occupied((0, 0).into()));
         assert!(board.is_occupied((-1, 0).into()));
 
-        let block = TEST_MOVABLE_BLOCK.at_nudged((1, 1).into());
+        let block = BlockName::Test
+            .create_movable((0, 0).into())
+            .at_nudged((1, 1).into());
+
         assert!(board.can_place(&block));
-    }
-}
-
-pub fn clear_filled_lines(mut commands: Commands, mut board_state: ResMut<BoardState>) {
-    // from the top of the board, to the bottom, check full lines
-    for row in (0..board_state.height()).rev() {
-        if board_state.is_row_full(row as usize) {
-            // remove all the entities in this row
-            for col in 0..board_state.width() {
-                let pos = IVec2::new(col as i32, row as i32);
-                if let Some(ent) = board_state.cell_mut(pos).take() {
-                    commands.entity(ent).despawn_recursive();
-                }
-            }
-
-            for row_ in row..(board_state.height() - 1) {
-                // move everything from the rows above down one 'y' position
-                for col in 0..board_state.width() {
-                    let from = IVec2::new(col as i32, (row_ + 1) as i32);
-                    let to = IVec2::new(col as i32, row_ as i32);
-
-                    let cell = board_state.cell(from);
-                    *board_state.cell_mut(to) = cell;
-                    *board_state.cell_mut(from) = None;
-                }
-            }
-        }
     }
 }

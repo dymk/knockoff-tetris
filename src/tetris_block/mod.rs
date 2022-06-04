@@ -1,19 +1,21 @@
-mod block_shape;
+mod block_definition;
 mod board_state;
+mod movable_block;
 mod skate_timer;
+mod tuple_util;
 
 use bevy::{core::FixedTimestep, ecs::schedule::ShouldRun, prelude::*};
 use rand::{thread_rng, Rng};
 
 use crate::{CELL_SIDE_LEN, GRID_CELLS};
 
-use self::block_shape::{Block, MovableBlock, RotDir};
-use self::board_state::{clear_filled_lines, BoardState};
+use self::board_state::BoardState;
+use self::movable_block::{BlockName, MovableBlock, RotDir};
 use self::skate_timer::{skate_timer_absent, skate_timer_present, SkateTimer};
 
 #[derive(Component)]
 struct TetrisBlock {
-    descriptor: MovableBlock,
+    movable: MovableBlock,
 }
 
 fn loc_to_translation(loc: IVec2) -> Vec3 {
@@ -34,62 +36,62 @@ impl Plugin for TetrisBlockPlugin {
             GRID_CELLS.width as usize,
             GRID_CELLS.height as usize,
         ));
-        app.insert_resource(Paused(false));
+        app.insert_resource(Paused(true));
         app.add_system(update_pause_state);
 
-        // spawning the new blocks must happen in its own stage, so update_block_positions can work with newly spawned entities
-        let mut spawn_new_blocks = SystemStage::parallel();
-        spawn_new_blocks.add_system_set(
-            SystemSet::new()
-                .with_run_criteria(no_active_block_exists)
-                .with_system(spawn_new_block),
-        );
-
-        let mut update_block_positions = SystemStage::parallel();
-        update_block_positions
-            .add_system(handle_block_left_right)
-            .add_system(handle_block_rotation)
-            .add_system(
-                update_child_transforms_from_board_state
-                    .after(handle_block_left_right)
-                    .after(handle_block_rotation),
-            )
-            // moves the active block down every 1 second
-            .add_system_set(
+        // step 1 - add new blocks to the game state
+        {
+            let mut spawn_new_blocks = SystemStage::parallel();
+            spawn_new_blocks.add_system_set(
                 SystemSet::new()
-                    .with_run_criteria(FixedTimestep::step(1.))
-                    .with_system(
-                        move_active_block_down.after(update_child_transforms_from_board_state),
-                    ),
-            )
-            // checks if the skate timer can be started after block movement
-            .add_system_set(
-                SystemSet::new()
-                    .with_run_criteria(skate_timer_absent)
-                    .with_system(start_stake_timer.after(move_active_block_down)),
-            )
-            // system waits for skate timer to fire to finalize block position
-            // and remove the ActiveBlock marker component
-            .add_system_set(
-                SystemSet::new()
-                    .with_run_criteria(skate_timer_present)
-                    .with_system(deactivate_block_after_skate_timer),
+                    .with_run_criteria(no_active_block_exists)
+                    .with_system(spawn_new_block),
             );
+            app.add_stage_after(CoreStage::Update, "spawn_new_blocks", spawn_new_blocks);
+        }
 
-        let mut update_board_state = SystemStage::parallel();
-        update_board_state.add_system(clear_filled_lines);
+        // step 2 - calculate the new position of blocks, finalize block placement,
+        // clear any filled lines
+        {
+            let mut update_block_positions = SystemStage::parallel();
+            update_block_positions
+                .add_system(handle_block_left_right)
+                // moves the active block down every 1 second
+                .add_system_set(
+                    SystemSet::new()
+                        .with_run_criteria(FixedTimestep::step(1.))
+                        .with_system(move_active_block_down),
+                )
+                // checks if the skate timer can be started after block movement
+                .add_system_set(
+                    SystemSet::new()
+                        .with_run_criteria(skate_timer_absent)
+                        .with_system(start_stake_timer.after(move_active_block_down)),
+                )
+                // system waits for skate timer to fire to finalize block position
+                // and remove the ActiveBlock marker component
+                .add_system_set(
+                    SystemSet::new()
+                        .with_run_criteria(skate_timer_present)
+                        .with_system(place_block_after_skate_timer),
+                );
+            app.add_stage_after(
+                "spawn_new_blocks",
+                "update_block_positions",
+                update_block_positions,
+            );
+        }
 
-        app.add_stage_after(CoreStage::Update, "spawn_new_blocks", spawn_new_blocks);
-        app.add_stage_after(
-            "spawn_new_blocks",
-            "update_block_positions",
-            update_block_positions,
-        );
-        app.add_stage_after(
-            "update_block_positions",
-            "update_board_state",
-            update_board_state,
-        );
+        // step 3 - update the Transform of all the sprites that are on the screen
+        {
+            let mut update_block_transforms = SystemStage::parallel();
+            update_block_transforms.add_system(update_child_transforms_from_board_state);
+            app.add_stage_after(
+                "update_block_positions",
+                "update_block_transforms",
+                update_block_transforms,
+            );
+        }
     }
 }
 
@@ -100,7 +102,7 @@ fn update_pause_state(input: Res<Input<KeyCode>>, mut paused: ResMut<Paused>) {
 }
 
 fn no_active_block_exists(query: Query<(), With<TetrisBlock>>) -> ShouldRun {
-    for _ in query.iter() {
+    if query.iter().next().is_some() {
         return ShouldRun::No;
     }
     ShouldRun::Yes
@@ -124,10 +126,16 @@ fn at_z_pixel(z: f32) -> Transform {
     }
 }
 
-const BLOCKS: &[Block] = &[
-    /* Block::LShape, Block::JShape, Block::OShape,  */ Block::IShape,
+const BLOCKS: &[BlockName] = &[
+    BlockName::L,
+    BlockName::J,
+    BlockName::O,
+    BlockName::I,
+    BlockName::T,
+    BlockName::S,
+    BlockName::Z,
 ];
-fn rand_block() -> Block {
+fn rand_block() -> BlockName {
     BLOCKS[thread_rng().gen_range(0..BLOCKS.len())]
 }
 
@@ -174,7 +182,7 @@ fn spawn_new_block(mut commands: Commands) {
             }
         })
         .insert(TetrisBlock {
-            descriptor: movable_block,
+            movable: movable_block,
         });
 }
 
@@ -183,45 +191,41 @@ fn handle_block_left_right(
     board_state: Res<BoardState>,
     mut active_block_query: Query<&mut TetrisBlock>,
 ) {
-    if let Ok(mut block) = active_block_query.get_single_mut() {
-        let mut try_nudge_descriptor = |dir| {
-            if board_state.can_place(&block.descriptor.at_nudged(dir)) {
-                block.descriptor.nudge(dir);
-                true
-            } else {
-                false
-            }
-        };
+    let mut block = match active_block_query.get_single_mut() {
+        Ok(block) => block,
+        _ => return,
+    };
 
-        if kb.just_pressed(KeyCode::Left) {
-            try_nudge_descriptor((-1, 0).into());
+    let mut try_nudge_descriptor = |dir| {
+        let movable = block.movable.nudge(dir);
+        if board_state.can_place(&movable) {
+            block.movable = movable;
+            true
+        } else {
+            false
         }
+    };
 
-        if kb.just_pressed(KeyCode::Right) {
-            try_nudge_descriptor((1, 0).into());
-        }
-
-        if kb.just_pressed(KeyCode::Down) {
-            while try_nudge_descriptor((0, -1).into()) {}
-        }
+    if kb.just_pressed(KeyCode::Left) {
+        try_nudge_descriptor((-1, 0).into());
     }
-}
 
-fn handle_block_rotation(
-    kb: Res<Input<KeyCode>>,
-    board_state: Res<BoardState>,
-    mut active_block_query: Query<&mut TetrisBlock>,
-) {
+    if kb.just_pressed(KeyCode::Right) {
+        try_nudge_descriptor((1, 0).into());
+    }
+
+    if kb.just_pressed(KeyCode::Down) {
+        while try_nudge_descriptor((0, -1).into()) {}
+    }
+
     let mut rotate = |dir| {
-        if let Ok(mut block) = active_block_query.get_single_mut() {
-            let (mut descriptor, kicks) = block.descriptor.at_rotate(dir);
+        let (movable, kicks) = block.movable.rotate(dir);
 
-            for &kick in kicks {
-                if board_state.can_place(&descriptor.at_nudged(kick)) {
-                    descriptor.nudge(kick);
-                    block.descriptor = descriptor;
-                    return;
-                }
+        for &kick in kicks {
+            let movable = movable.nudge(kick);
+            if board_state.can_place(&movable) {
+                block.movable = movable;
+                return;
             }
         }
     };
@@ -231,6 +235,10 @@ fn handle_block_rotation(
     }
     if kb.just_pressed(KeyCode::D) {
         rotate(RotDir::Right);
+    }
+
+    if kb.just_pressed(KeyCode::C) {
+        println!("{:?}", board_state.as_ref());
     }
 }
 
@@ -251,7 +259,7 @@ fn update_child_transforms_from_board_state(
     };
 
     for (block, children) in block_query.iter() {
-        for (pos, &ent) in block.descriptor.positions().zip(&children[..]) {
+        for (pos, &ent) in block.movable.positions().zip(&children[..]) {
             update_entity_xform(pos, ent);
         }
     }
@@ -273,8 +281,9 @@ fn move_active_block_down(
 
     for mut block in query.iter_mut() {
         // move down if possible
-        if board_state.can_place(&block.descriptor.at_nudged((0, -1).into())) {
-            block.descriptor.nudge((0, -1).into());
+        let movable = block.movable.nudge((0, -1).into());
+        if board_state.can_place(&movable) {
+            block.movable = movable;
             commands.remove_resource::<SkateTimer>();
         }
     }
@@ -287,14 +296,14 @@ fn start_stake_timer(
 ) {
     for block in query.iter_mut() {
         // can the block move down no further?
-        if !board_state.can_place(&block.descriptor.at_nudged((0, -1).into())) {
+        if !board_state.can_place(&block.movable.nudge((0, -1).into())) {
             // if so, start the skate timer
             commands.insert_resource(SkateTimer(Timer::from_seconds(1.0, false)));
         }
     }
 }
 
-fn deactivate_block_after_skate_timer(
+fn place_block_after_skate_timer(
     mut commands: Commands,
     mut timer: ResMut<SkateTimer>,
     time: Res<Time>,
@@ -309,13 +318,18 @@ fn deactivate_block_after_skate_timer(
 
     if let Ok((tetris_block_ent, tetris_block, children)) = query.get_single() {
         // if any blocks have the location below them occupied...
-        if !board_state.can_place(&tetris_block.descriptor.at_nudged((0, -1).into())) {
+        if !board_state.can_place(&tetris_block.movable.nudge((0, -1).into())) {
             // finalize the location of the block cells
-            board_state.place_block(&tetris_block.descriptor, &children[..]);
+            board_state.place_block(&tetris_block.movable, &children[..]);
             // orphan children, else their children despawn
             commands.entity(tetris_block_ent).remove_children(children);
             // and remove the tetris block entity
             commands.entity(tetris_block_ent).despawn();
+
+            // check for any lines that were filled, and clear them
+            for ent in board_state.clear_filled_lines() {
+                commands.entity(ent).despawn_recursive();
+            }
         }
     }
 }
