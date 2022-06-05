@@ -4,7 +4,7 @@ use super::block_definition::BlockDefinition;
 use bevy::{math::IVec2, prelude::Component};
 use lazy_static::lazy_static;
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub enum BlockName {
     L,
     J,

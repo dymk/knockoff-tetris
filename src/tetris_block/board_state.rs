@@ -160,10 +160,10 @@ mod test {
         assert!(!board.is_occupied((0, 0).into()));
         assert!(board.is_occupied((-1, 0).into()));
 
-        let block = BlockName::Test
-            .create_movable((0, 0).into())
-            .at_nudged((1, 1).into());
-
+        let block = BlockName::Test.create_movable((0, 0).into());
         assert!(board.can_place(&block));
+        assert!(board.can_place(&block.nudge((1, 1).into())));
+        assert!(!board.can_place(&block.nudge((-1, 0).into())));
+        assert!(!board.can_place(&block.nudge((3, 0).into())));
     }
 }
