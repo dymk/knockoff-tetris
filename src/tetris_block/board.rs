@@ -1,25 +1,36 @@
-use std::fmt;
+use std::{
+    collections::{HashMap, HashSet},
+    fmt,
+};
 
 use bevy::prelude::*;
 
 use super::movable_block::MovableBlock;
 
 type BoardCell = Option<Entity>;
-pub struct BoardState {
+// #[derive(Clone, Copy, Eq, PartialEq)]
+// enum BoardCell {
+//     Empty,
+//     Placed(Entity),
+// }
+
+pub struct Board {
     width: usize,
     height: usize,
     cells: Vec<BoardCell>,
 }
-impl BoardState {
-    pub fn new(width: usize, height: usize) -> BoardState {
+impl Board {
+    pub fn new(width: usize, height: usize) -> Board {
         let cells = vec![None; width * height];
 
-        BoardState {
+        Board {
             width,
             height,
             cells,
         }
     }
+
+    // pub fn spawn_shape()
 
     pub fn width(&self) -> usize {
         self.width
@@ -66,8 +77,9 @@ impl BoardState {
         *self.cell_mut(loc) = Some(entity);
     }
 
-    pub fn clear_filled_lines(&mut self) -> Vec<Entity> {
-        let mut entities_to_clear = vec![];
+    pub fn clear_filled_lines(&mut self) -> (HashSet<Entity>, HashMap<Entity, IVec2>) {
+        let mut cleared_entities = HashSet::new();
+        let mut moved_entities = HashMap::new();
 
         // from the top of the board, to the bottom, check full lines
         for row in (0..self.height).rev() {
@@ -76,7 +88,7 @@ impl BoardState {
                 for col in 0..self.width() {
                     let pos = IVec2::new(col as i32, row as i32);
                     if let Some(ent) = self.cell_mut(pos).take() {
-                        entities_to_clear.push(ent);
+                        cleared_entities.insert(ent);
                     }
                 }
 
@@ -87,6 +99,9 @@ impl BoardState {
                         let to = IVec2::new(col as i32, row_ as i32);
 
                         let cell = self.cell(from);
+                        if let Some(ent) = cell {
+                            moved_entities.insert(ent, to);
+                        }
                         *self.cell_mut(to) = cell;
                         *self.cell_mut(from) = None;
                     }
@@ -94,7 +109,7 @@ impl BoardState {
             }
         }
 
-        entities_to_clear
+        (cleared_entities, moved_entities)
     }
 
     fn is_occupied(&self, loc: IVec2) -> bool {
@@ -125,7 +140,7 @@ impl BoardState {
     }
 }
 
-impl fmt::Debug for BoardState {
+impl fmt::Debug for Board {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_fmt(format_args!("Board State({})\n", self.rows().len()))?;
         let spacer = "-".repeat(self.width * 2) + "\n";
@@ -152,18 +167,18 @@ impl fmt::Debug for BoardState {
 mod test {
     use crate::tetris_block::movable_block::BlockName;
 
-    use super::BoardState;
+    use super::Board;
 
     #[test]
     fn test() {
-        let board = BoardState::new(3, 3);
+        let board = Board::new(3, 3);
         assert!(!board.is_occupied((0, 0).into()));
         assert!(board.is_occupied((-1, 0).into()));
 
         let block = BlockName::Test.create_movable((0, 0).into());
         assert!(board.can_place(&block));
-        assert!(board.can_place(&block.nudge((1, 1).into())));
-        assert!(!board.can_place(&block.nudge((-1, 0).into())));
-        assert!(!board.can_place(&block.nudge((3, 0).into())));
+        assert!(board.can_place(&block.move_relative((1, 1).into())));
+        assert!(!board.can_place(&block.move_relative((-1, 0).into())));
+        assert!(!board.can_place(&block.move_relative((3, 0).into())));
     }
 }

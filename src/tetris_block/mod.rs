@@ -1,12 +1,16 @@
 mod block_definition;
-mod board_state;
+mod board;
+mod cell_positioning;
 mod movable_block;
 mod skate_timer;
 mod tuple_util;
+// mod tweening_position;
 
-use self::board_state::BoardState;
+use self::board::Board;
+use self::cell_positioning::{AbsolutePositionedCell, CellPositioningPlugin};
 use self::movable_block::{BlockName, MovableBlock, RotDir};
 use self::skate_timer::SkateTimer;
+use crate::tetris_block::cell_positioning::{AbsolutePositionedPiece, RelativePositionedCell};
 use crate::{CELL_SIDE_LEN, GRID_CELLS};
 use bevy::{core::FixedTimestep, ecs::schedule::ShouldRun, prelude::*};
 use rand::{thread_rng, Rng};
@@ -16,6 +20,10 @@ struct TetrisBlock {
     movable: MovableBlock,
 }
 
+// Marks the active TetrisBlock (which is being moved by the player)
+#[derive(Component)]
+struct Active;
+
 // Marks the TetrisBlock entity which is the Ghost
 // if no Ghost attribute, it's the active falling TetrisPiece
 #[derive(Component)]
@@ -24,29 +32,12 @@ struct Ghost;
 #[derive(Deref)]
 struct FrameNum(u64);
 
-#[derive(Component)]
-struct CellPosition(IVec2);
-impl CellPosition {
-    pub fn to_translation(&self) -> Vec3 {
-        let screen_dims =
-            Vec2::new(GRID_CELLS.width as f32, GRID_CELLS.height as f32) * CELL_SIDE_LEN;
-        // offset to apply to move center (0, 0) to the bottom left of the screen
-        let offset = -screen_dims / 2.;
-        let this = Vec2::new(self.0.x as f32, self.0.y as f32) * CELL_SIDE_LEN;
-        let shifted = this + offset + Vec2::new(CELL_SIDE_LEN / 2., CELL_SIDE_LEN / 2.);
-        Vec3::new(shifted.x, shifted.y, 0.)
-    }
-    pub fn set(&mut self, new: IVec2) {
-        self.0 = new;
-    }
-}
-
 struct Paused(bool);
 
 pub struct TetrisBlockPlugin;
 impl Plugin for TetrisBlockPlugin {
     fn build(&self, app: &mut bevy::prelude::App) {
-        app.insert_resource(BoardState::new(
+        app.insert_resource(Board::new(
             GRID_CELLS.width as usize,
             GRID_CELLS.height as usize,
         ));
@@ -54,6 +45,8 @@ impl Plugin for TetrisBlockPlugin {
         app.insert_resource(FrameNum(0));
         app.insert_resource(PlaceBlock(false));
         app.add_system(update_pause_state);
+        // app.add_plugin(TweeningPositionPlugin);
+        app.add_plugin(CellPositioningPlugin);
 
         {
             let mut stage = SystemStage::parallel();
@@ -75,11 +68,10 @@ impl Plugin for TetrisBlockPlugin {
         // step 2 - calculate the new position of blocks, finalize block placement,
         // clear any filled lines
         {
-            let mut update_block_positions = SystemStage::parallel();
-            update_block_positions
+            let mut update_block_positions_stage = SystemStage::parallel();
+            update_block_positions_stage
                 .add_system(handle_block_user_movement)
                 .add_system(position_ghost_block.after(handle_block_user_movement))
-                .add_system(update_cell_positions.after(position_ghost_block))
                 // moves the active block down every 1 second
                 .add_system_set(
                     SystemSet::new()
@@ -87,32 +79,24 @@ impl Plugin for TetrisBlockPlugin {
                         .with_system(move_active_block_down.after(handle_block_user_movement)),
                 )
                 // checks if the skate timer can be started after block movement
-                .add_system(
-                    check_skate_timer
-                        .after(move_active_block_down)
-                        .after(update_cell_positions),
-                )
+                .add_system(check_skate_timer.after(move_active_block_down))
                 .add_system(place_block.after(check_skate_timer));
 
             app.add_stage_after(
                 "spawn_new_blocks",
                 "update_block_positions",
-                update_block_positions,
+                update_block_positions_stage,
             );
         }
 
         // step 3 - update the Transform of all the sprites that are on the screen
         {
-            let mut update_block_transforms = SystemStage::parallel();
-            update_block_transforms.add_system(update_cell_positions_from_board_state);
-            update_block_transforms.add_system(
-                update_transforms_from_cell_positions.after(update_cell_positions_from_board_state),
-            );
-            app.add_stage_after(
-                "update_block_positions",
-                "update_block_transforms",
-                update_block_transforms,
-            );
+            // let mut update_block_transforms = SystemStage::parallel();
+            // app.add_stage_after(
+            //     "update_block_positions",
+            //     "update_block_transforms",
+            //     update_block_transforms,
+            // );
         }
     }
 }
@@ -145,21 +129,14 @@ fn rand_color() -> Color {
     COLORS[thread_rng().gen_range(0..COLORS.len())]
 }
 
-fn at_z_pixel(z: f32) -> Transform {
-    Transform {
-        translation: Vec3::new(0., 0., z),
-        ..default()
-    }
-}
-
 const BLOCKS: &[BlockName] = &[
-    BlockName::L,
-    BlockName::J,
-    BlockName::O,
+    // BlockName::L,
+    // BlockName::J,
+    // BlockName::O,
     BlockName::I,
-    BlockName::T,
-    BlockName::S,
-    BlockName::Z,
+    // BlockName::T,
+    // BlockName::S,
+    // BlockName::Z,
 ];
 fn rand_block() -> BlockName {
     BLOCKS[thread_rng().gen_range(0..BLOCKS.len())]
@@ -181,7 +158,26 @@ fn spawn_new_block(mut commands: Commands, frame_num: Res<FrameNum>) {
     commands
         .spawn()
         .insert_bundle(TransformBundle::identity())
-        .with_children(|builder| add_children(builder, color, false, &movable))
+        // xxx - consider removing MovableBlock entirely as it contains
+        // basically the same state as AbsolutePositionedPiece
+        .insert(AbsolutePositionedPiece {
+            pos: spawn_at,
+            rot: 0,
+            def: movable.definition,
+        })
+        .insert_bundle(SpriteBundle {
+            sprite: Sprite {
+                color: Color::WHITE,
+                custom_size: Some(Vec2::new(10., 10.)),
+                ..default()
+            },
+            transform: Transform {
+                translation: Vec3::new(0., 0., 15.),
+                ..default()
+            },
+            ..default()
+        })
+        .with_children(|builder| add_cell_children(builder, color, false, &movable))
         .insert(TetrisBlock {
             movable: movable.clone(),
         });
@@ -190,12 +186,34 @@ fn spawn_new_block(mut commands: Commands, frame_num: Res<FrameNum>) {
     commands
         .spawn()
         .insert_bundle(TransformBundle::identity())
-        .with_children(|builder| add_children(builder, color, true, &movable))
+        .with_children(|builder| add_cell_children(builder, color, true, &movable))
+        .insert(AbsolutePositionedPiece {
+            pos: spawn_at,
+            rot: 0,
+            def: movable.definition,
+        })
         .insert(TetrisBlock { movable })
+        .insert_bundle(SpriteBundle {
+            sprite: Sprite {
+                color: Color::BLACK,
+                custom_size: Some(Vec2::new(10., 10.)),
+                ..default()
+            },
+            transform: Transform {
+                translation: Vec3::new(0., 0., 15.),
+                ..default()
+            },
+            ..default()
+        })
         .insert(Ghost);
 }
 
-fn add_children(builder: &mut ChildBuilder, color: Color, is_ghost: bool, movable: &MovableBlock) {
+fn add_cell_children(
+    builder: &mut ChildBuilder,
+    color: Color,
+    is_ghost: bool,
+    movable: &MovableBlock,
+) {
     let big_sprite = || Sprite {
         color,
         custom_size: Some(Vec2::new(CELL_SIDE_LEN, CELL_SIDE_LEN)),
@@ -213,22 +231,31 @@ fn add_children(builder: &mut ChildBuilder, color: Color, is_ghost: bool, movabl
             custom_size: Some(Vec2::new(CELL_SIDE_LEN, CELL_SIDE_LEN)),
             ..default()
         };
+    fn at_z_level(z: f32) -> Transform {
+        Transform {
+            translation: Vec3::new(0., 0., z),
+            ..default()
+        }
+    }
 
-    for pos in movable.positions() {
+    for pos in movable.relative_positions() {
         builder
             .spawn()
             .insert_bundle(TransformBundle::identity())
-            .insert(CellPosition(pos))
+            .insert(RelativePositionedCell {
+                pos,
+                def: movable.definition,
+            })
             .with_children(|p2| {
                 if !is_ghost {
                     p2.spawn().insert_bundle(SpriteBundle {
                         sprite: big_sprite(),
-                        transform: at_z_pixel(10.),
+                        transform: at_z_level(10.),
                         ..default()
                     });
                     p2.spawn().insert_bundle(SpriteBundle {
                         sprite: little_sprite(),
-                        transform: at_z_pixel(11.),
+                        transform: at_z_level(11.),
                         ..default()
                     });
                 } else {
@@ -237,7 +264,7 @@ fn add_children(builder: &mut ChildBuilder, color: Color, is_ghost: bool, movabl
                         // this position will be updated later to move the block to the lowest point possible on the screen
                         .insert_bundle(SpriteBundle {
                             sprite: ghost_sprite(),
-                            transform: at_z_pixel(9.),
+                            transform: at_z_level(9.),
                             ..default()
                         });
                 }
@@ -247,17 +274,23 @@ fn add_children(builder: &mut ChildBuilder, color: Color, is_ghost: bool, movabl
 
 fn handle_block_user_movement(
     kb: Res<Input<KeyCode>>,
-    board_state: Res<BoardState>,
+    board_state: Res<Board>,
     mut place_block: ResMut<PlaceBlock>,
-    mut active_block_query: Query<&mut TetrisBlock, Without<Ghost>>,
+    mut active_block_query: Query<(&mut TetrisBlock, &mut AbsolutePositionedPiece), Without<Ghost>>,
 ) {
-    let mut block = match active_block_query.get_single_mut() {
-        Ok(block) => block,
+    let (mut block, mut app) = match active_block_query.get_single_mut() {
+        Ok(ok) => ok,
         _ => return,
     };
 
     let mut nudge_movable = |dir| {
-        let movable = block.movable.nudge(dir);
+        let movable = block.movable.move_relative(dir);
+        println!(
+            "attempting to nudge in {} to {}",
+            dir,
+            movable.root_position()
+        );
+
         if board_state.can_place(&movable) {
             block.movable = movable;
             true
@@ -278,7 +311,9 @@ fn handle_block_user_movement(
     }
     // hard drop
     if kb.just_pressed(KeyCode::Up) {
+        println!("hard drop");
         while nudge_movable((0, -1).into()) {}
+        println!("block is at {} now", block.movable.root_position());
         place_block.0 = true;
     }
 
@@ -286,7 +321,7 @@ fn handle_block_user_movement(
         let (movable, kicks) = block.movable.rotate(dir);
 
         for &kick in kicks {
-            let movable = movable.nudge(kick);
+            let movable = movable.move_relative(kick);
             if board_state.can_place(&movable) {
                 block.movable = movable;
                 return;
@@ -304,40 +339,32 @@ fn handle_block_user_movement(
     if kb.just_pressed(KeyCode::C) {
         println!("{:?}", board_state.as_ref());
     }
+
+    app.pos = block.movable.root_position();
+    app.rot = block.movable.rot();
 }
 
 fn position_ghost_block(
-    mut ghost_query: Query<&mut TetrisBlock, With<Ghost>>,
+    mut ghost_query: Query<(&mut TetrisBlock, &mut AbsolutePositionedPiece), With<Ghost>>,
     block_query: Query<&TetrisBlock, Without<Ghost>>,
-    board_state: Res<BoardState>,
+    board_state: Res<Board>,
 ) {
     let active = block_query.single();
-    let mut ghost = ghost_query.single_mut();
+    let (mut ghost, mut app) = ghost_query.single_mut();
 
     // from the original active position, move ghost down until it can't be moved
     // further
     ghost.movable = active.movable.clone();
-    while board_state.can_place(&ghost.movable.nudge((0, -1).into())) {
-        ghost.movable = ghost.movable.nudge((0, -1).into());
+    while board_state.can_place(&ghost.movable.move_relative((0, -1).into())) {
+        ghost.movable = ghost.movable.move_relative((0, -1).into());
     }
-}
-
-fn update_cell_positions(
-    query: Query<(&TetrisBlock, &Children)>,
-    mut cell_query: Query<&mut CellPosition>,
-) {
-    for (block, children) in query.iter() {
-        for (cell_pos, &child_ent) in block.movable.positions().zip(&children[..]) {
-            if let Ok(mut cell) = cell_query.get_mut(child_ent) {
-                cell.set(cell_pos)
-            }
-        }
-    }
+    app.pos = ghost.movable.root_position();
+    app.rot = ghost.movable.rot();
 }
 
 fn move_active_block_down(
     paused: Res<Paused>,
-    board_state: Res<BoardState>,
+    board_state: Res<Board>,
     mut query: Query<&mut TetrisBlock>,
 ) {
     if paused.0 {
@@ -345,7 +372,7 @@ fn move_active_block_down(
     }
 
     for mut block in query.iter_mut() {
-        let movable = block.movable.nudge((0, -1).into());
+        let movable = block.movable.move_relative((0, -1).into());
         if board_state.can_place(&movable) {
             block.movable = movable;
         }
@@ -361,7 +388,7 @@ fn check_skate_timer(
     mut place_block: ResMut<PlaceBlock>,
     frame_num: Res<FrameNum>,
     timer: Option<ResMut<SkateTimer>>,
-    board_state: Res<BoardState>,
+    board_state: Res<Board>,
     time: Res<Time>,
     query: Query<&TetrisBlock, Without<Ghost>>,
 ) {
@@ -370,7 +397,7 @@ fn check_skate_timer(
         Err(_) => return,
     };
 
-    if board_state.can_place(&active_movable.nudge((0, -1).into())) {
+    if board_state.can_place(&active_movable.move_relative((0, -1).into())) {
         // if the block can move down, stop the skate timer
         // if so, stop the skate timer
         if timer.is_some() {
@@ -402,7 +429,8 @@ fn place_block(
     mut commands: Commands,
     active_query: Query<(Entity, &TetrisBlock, &Children), Without<Ghost>>,
     ghost_query: Query<Entity, (With<TetrisBlock>, With<Ghost>)>,
-    mut board_state: ResMut<BoardState>,
+    mut cell_query: Query<&mut AbsolutePositionedCell>,
+    mut board_state: ResMut<Board>,
 ) {
     if place_block.0 {
         place_block.0 = false;
@@ -422,7 +450,7 @@ fn place_block(
     };
 
     // if there's still room to move the block downwards...
-    if board_state.can_place(&active_block.movable.nudge((0, -1).into())) {
+    if board_state.can_place(&active_block.movable.move_relative((0, -1).into())) {
         // then bail out on finalizing block placement
         println!("{} - room below block, bailing", frame_num.0);
         return;
@@ -430,6 +458,14 @@ fn place_block(
 
     // no more room to move the block down, finalize plcaement
     board_state.place_block(&active_block.movable, &active_children[..]);
+
+    // add absolute positioning to each placed cell
+    let rot = active_block.movable.rot();
+    for (pos, &child_ent) in active_block.movable.positions().zip(&active_children[..]) {
+        commands
+            .entity(child_ent)
+            .insert(AbsolutePositionedCell { pos, rot });
+    }
 
     // orphan children of the active, the board state effectively takes
     // ownership of their placement once the parent TetrisBlock is despawned
@@ -445,26 +481,15 @@ fn place_block(
     commands.entity(ghost_entity).despawn_recursive();
 
     // check for any lines that were filled, and clear them
-    for ent in board_state.clear_filled_lines() {
+    let (cleared, moved) = board_state.clear_filled_lines();
+    for ent in cleared {
         commands.entity(ent).despawn_recursive();
     }
-}
 
-fn update_cell_positions_from_board_state(
-    mut query: Query<&mut CellPosition>,
-    board_state: Res<BoardState>,
-) {
-    for (pos, ent) in board_state.iter_ents() {
-        if let Ok(mut cell_position) = query.get_mut(ent) {
-            cell_position.set(pos);
+    // update absolute positions of cells that were moved on the board
+    for (ent, pos) in moved {
+        if let Ok(mut c) = cell_query.get_component_mut::<AbsolutePositionedCell>(ent) {
+            c.pos = pos;
         }
-    }
-}
-
-// move the sprites around according to the new board state, and cell positions
-// for the blocks that care about that information
-fn update_transforms_from_cell_positions(mut query: Query<(&mut Transform, &CellPosition)>) {
-    for (mut transform, cell_position) in query.iter_mut() {
-        transform.translation = cell_position.to_translation();
     }
 }

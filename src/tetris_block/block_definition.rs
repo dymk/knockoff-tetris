@@ -29,12 +29,17 @@ impl LRKicks {
 pub struct BlockDefinition {
     pub rotations: Vec<Vec<IVec2>>,
     pub kicks: LRKicks,
+    pub around_corner: bool,
 }
 impl BlockDefinition {
-    pub fn new(rotations: Vec<Vec<IVec2>>, kicks: LRKicks) -> BlockDefinition {
+    pub fn new(rotations: Vec<Vec<IVec2>>, kicks: LRKicks, around_corner: bool) -> BlockDefinition {
         assert!(rotations.len() == kicks.left.len());
         assert!(rotations.len() == kicks.right.len());
-        BlockDefinition { rotations, kicks }
+        BlockDefinition {
+            rotations,
+            kicks,
+            around_corner,
+        }
     }
 }
 

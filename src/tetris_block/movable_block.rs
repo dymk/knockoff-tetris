@@ -1,7 +1,15 @@
-use crate::tetris_block::{block_definition::LRKicks, tuple_util::conv_tuples};
+use std::f32::consts::TAU;
+
+use crate::{
+    tetris_block::{block_definition::LRKicks, tuple_util::conv_tuples},
+    CELL_SIDE_LEN, GRID_CELLS,
+};
 
 use super::block_definition::BlockDefinition;
-use bevy::{math::IVec2, prelude::Component};
+use bevy::{
+    math::{IVec2, Quat, Vec3},
+    prelude::{default, Component, Transform},
+};
 use lazy_static::lazy_static;
 
 #[derive(Copy, Clone, Debug)]
@@ -40,9 +48,10 @@ pub type Kicks = &'static [IVec2];
 
 #[derive(Component, Clone)]
 pub struct MovableBlock {
-    definition: &'static BlockDefinition,
+    pub definition: &'static BlockDefinition,
     position: IVec2,
     rotation: u8,
+    rotation_continuous: i32,
 }
 
 impl MovableBlock {
@@ -51,8 +60,26 @@ impl MovableBlock {
             definition,
             position,
             rotation: 0,
+            rotation_continuous: 0,
         }
     }
+
+    pub fn rot(&self) -> i32 {
+        self.rotation_continuous
+    }
+
+    pub fn rotation(&self) -> f32 {
+        if self.definition.rotations.len() == 1 {
+            return 0.;
+        } else {
+            (self.rotation_continuous as f32) / (self.definition.rotations.len() as f32)
+        }
+    }
+
+    pub fn root_position(&self) -> IVec2 {
+        self.position
+    }
+
     pub fn rotate(&mut self, rot_dir: RotDir) -> (Self, Kicks) {
         let kicks = &match rot_dir {
             RotDir::Right => &self.definition.kicks.right,
@@ -61,6 +88,11 @@ impl MovableBlock {
 
         let num_rotations = self.definition.rotations.len();
         let self_rot = self.rotation as usize;
+
+        self.rotation_continuous += match rot_dir {
+            RotDir::Left => -1,
+            RotDir::Right => 1,
+        };
 
         let rotation = match rot_dir {
             RotDir::Right => {
@@ -89,11 +121,23 @@ impl MovableBlock {
             .map(|&loc| loc + self.position)
     }
 
-    pub fn nudge(&self, by: IVec2) -> MovableBlock {
+    pub fn relative_positions(
+        &self,
+    ) -> impl ExactSizeIterator<Item = IVec2> + DoubleEndedIterator<Item = IVec2> + '_ {
+        self.definition.rotations[self.rotation as usize]
+            .iter()
+            .copied()
+    }
+
+    pub fn move_relative(&self, by: IVec2) -> MovableBlock {
         MovableBlock {
             position: self.position + by,
             ..*self
         }
+    }
+
+    pub fn around_corner(&self) -> bool {
+        self.definition.around_corner
     }
 }
 
@@ -156,7 +200,8 @@ lazy_static! {
                              (1, 1),
             (-1, 0), (0, 0), (1, 0)
         ]),
-        STANDARD_KICKS.clone()
+        STANDARD_KICKS.clone(),
+        false
     );
 
     #[rustfmt::skip]
@@ -165,7 +210,8 @@ lazy_static! {
             (-1, 1),
             (-1, 0), (0, 0), (1, 0)
         ]),
-        STANDARD_KICKS.clone()
+        STANDARD_KICKS.clone(),
+        false
     );
 
     #[rustfmt::skip]
@@ -174,7 +220,8 @@ lazy_static! {
             (0, 1), (1, 1),
             (0, 0), (1, 0)
         ]),
-        NO_KICKS.clone()
+        NO_KICKS.clone(),
+        false
     );
 
     #[rustfmt::skip]
@@ -182,7 +229,8 @@ lazy_static! {
         build_rotations(4, true, &[
             (-2, 0), (-1, 0), (0, 0), (1, 0)
         ]),
-        I_KICKS.clone()
+        I_KICKS.clone(),
+        true
     );
 
     #[rustfmt::skip]
@@ -192,6 +240,7 @@ lazy_static! {
             (-1, 0), (0, 0), (1, 0)
         ]),
         STANDARD_KICKS.clone(),
+        false
     );
 
     #[rustfmt::skip]
@@ -201,6 +250,7 @@ lazy_static! {
             (-1, 0), (0, 0),
         ]),
         STANDARD_KICKS.clone(),
+        false
     );
 
     #[rustfmt::skip]
@@ -210,9 +260,10 @@ lazy_static! {
                      (0, 0), (1, 0),
         ]),
         STANDARD_KICKS.clone(),
+        false
     );
 
-    static ref DOT_CONFIG: BlockDefinition = BlockDefinition::new(build_rotations(1, false, &[(0, 0)]), NO_KICKS.clone());
+    static ref DOT_CONFIG: BlockDefinition = BlockDefinition::new(build_rotations(1, false, &[(0, 0)]), NO_KICKS.clone(), false);
 }
 
 fn build_rotations(
